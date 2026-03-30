@@ -1,16 +1,47 @@
-venv
-.idea
-build
-dist
-models/models--Systran--faster-whisper-base
-models/models--Systran--faster-whisper-tiny
-*.log
-*.wav
-*.mp3
+# ====== Python ======
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+*.pyo
+*.pyd
+
+# ====== 虚拟环境 ======
+venv/
+.venv/
+
+# ====== 模型文件（体积大，不上传） ======
+models/
+
+# ====== 构建产物 ======
+build/
+dist/
 *.spec
 *.exe
+
+# ====== 音视频文件 ======
+*.wav
+*.mp3
+*.mp4
+*.flac
+*.ogg
+*.m4a
+
+# ====== 运行时临时文件 ======
+static/tmp/
+static/file/
+Export/
+*.log
+
+# ====== 工具/压缩包 ======
+ffmpeg/
+ffmpeg.zip
 *.zip
-ffmpeg
-static/tmp
-static/file
-stslib/__pycache__
+
+# ====== IDE / 编辑器 ======
+.idea/
+.vscode/
+*.swp
+*.swo
+.codebuddy/

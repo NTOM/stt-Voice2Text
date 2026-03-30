@@ -336,6 +336,8 @@
       var getprogress = function (file_name, field, star_time) {
         var file_element = get_file_el(file_name);
         var done = null;
+        var downloadHintShown = false;
+        var downloadHintTimer = null;
         var handler = function () {
           $.post("/progressbar", field, function (res) {
             if (res.code !== 0) {
@@ -347,7 +349,28 @@
 			  return
             }
             const percentage = `${(res["data"] * 100).toFixed(2)}%`;
-            set_status(file_name, percentage, "#16b777");
+            // 如果进度为0且超过3秒，显示"正在加载/下载模型"的友好提示
+            if (res["data"] === 0 && !downloadHintShown) {
+              if (!downloadHintTimer) {
+                downloadHintTimer = setTimeout(function() {
+                  if (res["data"] === 0) {
+                    downloadHintShown = true;
+                    var hint = language === "zh" 
+                      ? "⏳ 正在加载模型(首次使用需下载,请耐心等待)..." 
+                      : "⏳ Loading model (downloading on first use, please wait)...";
+                    set_status(file_name, hint, "#ff9800");
+                  }
+                }, 3000);
+              }
+            } else if (res["data"] > 0) {
+              // 模型加载完成，开始识别，清除下载提示
+              downloadHintShown = false;
+              if (downloadHintTimer) {
+                clearTimeout(downloadHintTimer);
+                downloadHintTimer = null;
+              }
+              set_status(file_name, percentage, "#16b777");
+            }
             if (res["data"] >= 1) {
               var sec = +new Date() - star_time;
               set_status(

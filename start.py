@@ -17,6 +17,153 @@ import time
 from werkzeug.utils import secure_filename
 import uuid
 
+# ====== 模型下载进度日志增强 ======
+import faster_whisper.utils as _fw_utils
+from tqdm.auto import tqdm as _real_tqdm
+
+# 模型大小参考（用于预估下载量）
+_MODEL_SIZES = {
+    "tiny": "~75 MB", "tiny.en": "~75 MB",
+    "base": "~145 MB", "base.en": "~145 MB",
+    "small": "~484 MB", "small.en": "~484 MB",
+    "medium": "~1.5 GB", "medium.en": "~1.5 GB",
+    "large-v1": "~3 GB", "large-v2": "~3 GB", "large-v3": "~3 GB",
+    "large-v3-turbo": "~1.6 GB",
+    "distil-small.en": "~200 MB", "distil-medium.en": "~400 MB",
+    "distil-large-v2": "~1.5 GB", "distil-large-v3": "~1.5 GB",
+}
+
+class _LoggingTqdm(_real_tqdm):
+    """替代 faster-whisper 的 disabled_tqdm，启用真实的下载进度输出"""
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('disable', None)  # 移除禁用标志
+        kwargs['disable'] = False
+        kwargs.setdefault('unit', 'B')
+        kwargs.setdefault('unit_scale', True)
+        kwargs.setdefault('unit_divisor', 1024)
+        kwargs.setdefault('miniters', 1)
+        super().__init__(*args, **kwargs)
+
+# 猴子补丁：替换 faster-whisper 中的 disabled_tqdm 为带日志的版本
+_fw_utils.disabled_tqdm = _LoggingTqdm
+
+
+def _check_model_exists(model_name, download_root):
+    """检查模型文件是否已存在于本地"""
+    # faster-whisper 的模型名称映射
+    model_map = getattr(_fw_utils, '_MODELS', {})
+    if re.match(r".*/.*", model_name):
+        repo_id = model_name
+    else:
+        repo_id = model_map.get(model_name, '')
+    
+    if not repo_id:
+        return False, None
+    
+    # 检查 download_root 下是否有对应的模型目录
+    # huggingface_hub 会创建 models--{org}--{name} 格式的缓存目录
+    safe_repo = repo_id.replace('/', '--')
+    cache_dir = os.path.join(download_root, f'models--{safe_repo}')
+    
+    if os.path.exists(cache_dir):
+        # 检查是否有 snapshots 目录（说明下载完成）
+        snapshots_dir = os.path.join(cache_dir, 'snapshots')
+        if os.path.exists(snapshots_dir) and os.listdir(snapshots_dir):
+            # 计算已下载的模型大小
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(cache_dir):
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    if not os.path.islink(fp):
+                        total_size += os.path.getsize(fp)
+            return True, total_size
+    return False, None
+
+
+def _format_size(size_bytes):
+    """格式化文件大小"""
+    if size_bytes is None:
+        return "未知"
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def _load_model_with_logging(model_name, device, download_root, progress_key=None):
+    """
+    带详细日志的模型加载函数。
+    在控制台和日志文件中输出下载进度、耗时、成功/失败信息。
+    progress_key: 如果提供，会更新 cfg.progressresult 中的状态信息供前端查看。
+    """
+    actual_name = model_name if not model_name.startswith('distil') else model_name.replace('-whisper', '')
+    size_hint = _MODEL_SIZES.get(model_name, _MODEL_SIZES.get(actual_name, "未知大小"))
+    
+    # 检查模型是否已存在
+    exists, local_size = _check_model_exists(actual_name, download_root)
+    
+    if exists:
+        print(f'┌─────────────────────────────────────────────')
+        print(f'│ 📦 模型 [{model_name}] 已在本地缓存中 (大小: {_format_size(local_size)})')
+        print(f'│ 📂 位置: {download_root}')
+        print(f'│ ⏳ 正在加载到 {device.upper()} ...')
+        print(f'└─────────────────────────────────────────────')
+    else:
+        print(f'┌─────────────────────────────────────────────')
+        print(f'│ 🔽 模型 [{model_name}] 本地不存在，开始从 HuggingFace 下载')
+        print(f'│ 📊 预估大小: {size_hint}')
+        print(f'│ 🌐 下载源: {os.environ.get("HF_ENDPOINT", "https://huggingface.co")}')
+        print(f'│ 📂 保存位置: {download_root}')
+        print(f'│ ⏳ 下载中，请耐心等待...')
+        print(f'└─────────────────────────────────────────────')
+    
+    start_time = time.time()
+    
+    try:
+        modelobj = WhisperModel(
+            actual_name,
+            device=device,
+            download_root=download_root
+        )
+        elapsed = time.time() - start_time
+        
+        # 加载成功后再次检查大小
+        _, final_size = _check_model_exists(actual_name, download_root)
+        
+        print(f'┌─────────────────────────────────────────────')
+        print(f'│ ✅ 模型 [{model_name}] 加载成功!')
+        print(f'│ ⏱️  耗时: {elapsed:.1f} 秒')
+        print(f'│ 💾 模型大小: {_format_size(final_size)}')
+        print(f'│ 🖥️  运行设备: {device.upper()}')
+        print(f'└─────────────────────────────────────────────')
+        
+        return modelobj
+        
+    except Exception as e:
+        elapsed = time.time() - start_time
+        error_msg = str(e)
+        
+        print(f'┌─────────────────────────────────────────────')
+        print(f'│ ❌ 模型 [{model_name}] 加载失败!')
+        print(f'│ ⏱️  耗时: {elapsed:.1f} 秒')
+        print(f'│ 🔴 错误: {error_msg}')
+        
+        # 根据错误类型给出具体建议
+        if 'Connection' in error_msg or 'timeout' in error_msg.lower() or 'urlopen' in error_msg.lower():
+            print(f'│ 💡 建议: 网络连接失败，请检查网络或尝试使用代理')
+        elif 'CUDA' in error_msg or 'cuda' in error_msg:
+            print(f'│ 💡 建议: CUDA 相关错误，请检查显卡驱动或尝试设置 devtype=cpu')
+        elif 'out of memory' in error_msg.lower() or 'OOM' in error_msg:
+            print(f'│ 💡 建议: 显存不足，请尝试使用更小的模型或降低 beam_size/best_of')
+        elif 'disk' in error_msg.lower() or 'space' in error_msg.lower():
+            print(f'│ 💡 建议: 磁盘空间不足，请释放磁盘空间后重试')
+        else:
+            print(f'│ 💡 建议: 请查看上方详细错误信息，或到 GitHub Issues 寻求帮助')
+        
+        print(f'└─────────────────────────────────────────────')
+        raise
+
 class CustomRequestHandler(WSGIHandler):
     def log_request(self):
         pass
@@ -136,15 +283,15 @@ def shibie():
         modelobj=cfg.MODEL_DICT.get(model)
         if not modelobj:
             try:
-                print(f'开始加载模型，若不存在将自动下载')
-                modelobj= WhisperModel(
-                    model  if not model.startswith('distil') else  model.replace('-whisper', ''), 
-                    device=sets.get('devtype'), 
-                    download_root=cfg.ROOT_DIR + "/models"
+                modelobj = _load_model_with_logging(
+                    model_name=model,
+                    device=sets.get('devtype'),
+                    download_root=cfg.ROOT_DIR + "/models",
+                    progress_key=key
                 )
                 cfg.MODEL_DICT[model]=modelobj
             except Exception as e:
-                err=f'从 huggingface.co 下载模型 {model} 失败，请检查网络连接' if model.find('/')>0 else ''
+                err=f'从 huggingface.co 下载模型 {model} 失败，请检查网络连接。' if model.find('/')>0 else '模型加载失败: '
                 cfg.progressresult[key]='error:'+err+str(e)
                 return
         try:
@@ -359,11 +506,9 @@ def api():
 def _api_process(model_name,wav_file,language=None,response_format="text",prompt=None):
     try:
         sets=cfg.parse_ini()
-        if model_name.startswith('distil-'):
-            model_name = model_name.replace('-whisper', '')
-        model = WhisperModel(
-            model_name, 
-            device=sets.get('devtype'), 
+        model = _load_model_with_logging(
+            model_name=model_name,
+            device=sets.get('devtype'),
             download_root=cfg.ROOT_DIR + "/models"
         )
     except Exception as e:
