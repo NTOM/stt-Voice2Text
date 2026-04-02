@@ -39,9 +39,13 @@ ffmpeg/
 ffmpeg.zip
 *.zip
 
+# ====== AI 生成的临时文件 ======
+tools/_*
+
 # ====== IDE / 编辑器 ======
 .idea/
 .vscode/
 *.swp
 *.swo
 .codebuddy/
+.cursor/
