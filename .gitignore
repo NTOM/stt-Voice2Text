@@ -49,3 +49,4 @@ tools/_*
 *.swo
 .codebuddy/
 .cursor/
+.specify/
